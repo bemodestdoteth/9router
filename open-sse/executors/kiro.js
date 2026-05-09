@@ -28,8 +28,113 @@ export class KiroExecutor extends BaseExecutor {
     return headers;
   }
 
+  supportsThinking() {
+    return false;
+  }
+
+  mapModelToKiro(modelName) {
+    const lower = (modelName || '').toLowerCase();
+
+    // Fuzzy matching for common patterns
+    if (lower.includes('opus')) {
+      return 'claude-opus-4.5';
+    }
+    if (lower.includes('sonnet') && lower.includes('4.6')) {
+      return 'claude-sonnet-4.6';
+    }
+    if (lower.includes('sonnet') && lower.includes('4.5')) {
+      return 'claude-sonnet-4.5';
+    }
+    if (lower.includes('sonnet') && lower.includes('4')) {
+      return 'claude-sonnet-4';
+    }
+    if (lower.includes('haiku')) {
+      return 'claude-haiku-4.5';
+    }
+
+    return modelName || 'claude-sonnet-4.6';
+  }
+
   transformRequest(model, body, stream, credentials) {
-    return body;
+    const kiroModel = this.mapModelToKiro(model);
+
+    const messages = body.messages || [];
+    const system = body.system || '';
+
+    const conversationHistory = [];
+
+    if (system) {
+      conversationHistory.push({
+        role: 'system',
+        content: typeof system === 'string' ? system : JSON.stringify(system)
+      });
+    }
+
+    for (const msg of messages) {
+      const role = msg.role === 'assistant' ? 'assistant' : 'user';
+      let content = '';
+
+      if (typeof msg.content === 'string') {
+        content = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        const textParts = [];
+        for (const block of msg.content) {
+          if (block.type === 'text') {
+            textParts.push(block.text);
+          } else if (block.type === 'thinking') {
+            textParts.push(`<thinking>${block.thinking}</thinking>`);
+          } else if (block.type === 'tool_use') {
+            textParts.push(`<tool_use name="${block.name}">${JSON.stringify(block.input)}</tool_use>`);
+          } else if (block.type === 'tool_result') {
+            textParts.push(`<tool_result tool_use_id="${block.tool_use_id}">${typeof block.content === 'string' ? block.content : JSON.stringify(block.content)
+              }</tool_result>`);
+          } else if (block.type === 'image') {
+            textParts.push('[Image attached]');
+          }
+        }
+        content = textParts.join('\n');
+      }
+
+      conversationHistory.push({ role, content });
+    }
+
+    const lastUserMessage = conversationHistory.filter(m => m.role === 'user').pop();
+    const prompt = lastUserMessage?.content || '';
+
+    const lastUserIndex = conversationHistory.lastIndexOf(lastUserMessage);
+    let previousMessages = [];
+    if (lastUserIndex !== -1) {
+      previousMessages = conversationHistory.filter((m, i) => i !== lastUserIndex);
+    } else {
+      previousMessages = conversationHistory;
+    }
+
+    return {
+      conversationState: {
+        conversationId: uuidv4(),
+        chatTriggerType: 'MANUAL',
+        customizationArn: null,
+        currentMessage: {
+          userInputMessage: {
+            content: prompt,
+            userInputMessageContext: {
+              editorState: {
+                cursorState: null
+              }
+            }
+          }
+        },
+        history: previousMessages.map(msg => ({
+          [msg.role === 'assistant' ? 'assistantResponseMessage' : 'userInputMessage']: {
+            content: msg.content
+          }
+        }))
+      },
+      profileArn: null,
+      source: 'AI_EDITOR',
+      modelId: kiroModel,
+      origin: 'AI_EDITOR'
+    };
   }
 
   /**
@@ -38,14 +143,14 @@ export class KiroExecutor extends BaseExecutor {
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
     const url = this.buildUrl(model, stream, 0);
     const transformedBody = this.transformRequest(model, body, stream, credentials);
-    
+
     // Merge default retry config with provider-specific config
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
     let retryAttempts = 0;
 
     while (true) {
       const headers = this.buildHeaders(credentials, stream);
-      
+
       const response = await proxyAwareFetch(url, {
         method: "POST",
         headers,
@@ -116,7 +221,7 @@ export class KiroExecutor extends BaseExecutor {
           if (!event) continue;
 
           const eventType = event.headers[":event-type"] || "";
-          
+
           // Track total content length for token estimation
           if (!state.totalContentLength) state.totalContentLength = 0;
           if (!state.contextUsagePercentage) state.contextUsagePercentage = 0;
@@ -125,7 +230,7 @@ export class KiroExecutor extends BaseExecutor {
           if (eventType === "assistantResponseEvent" && event.payload?.content) {
             const content = event.payload.content;
             state.totalContentLength += content.length;
-            
+
             const chunk = {
               id: responseId,
               object: "chat.completion.chunk",
@@ -277,7 +382,7 @@ export class KiroExecutor extends BaseExecutor {
             if (metrics && typeof metrics === 'object') {
               const inputTokens = metrics.inputTokens || 0;
               const outputTokens = metrics.outputTokens || 0;
-              
+
               if (inputTokens > 0 || outputTokens > 0) {
                 state.usage = {
                   prompt_tokens: inputTokens,
@@ -291,27 +396,27 @@ export class KiroExecutor extends BaseExecutor {
           // Emit final chunk only after receiving BOTH meteringEvent AND contextUsageEvent
           if (state.hasMeteringEvent && state.hasContextUsage && !state.finishEmitted) {
             state.finishEmitted = true;
-            
+
             // Estimate tokens if not available from events
             if (!state.usage) {
               // Estimate output tokens from content length
-              const estimatedOutputTokens = state.totalContentLength > 0 
+              const estimatedOutputTokens = state.totalContentLength > 0
                 ? Math.max(1, Math.floor(state.totalContentLength / 4))
                 : 0;
-              
+
               // Estimate input tokens from contextUsagePercentage
               // Kiro models typically have 200k context window
               const estimatedInputTokens = state.contextUsagePercentage > 0
                 ? Math.floor(state.contextUsagePercentage * 200000 / 100)
                 : 0;
-              
+
               state.usage = {
                 prompt_tokens: estimatedInputTokens,
                 completion_tokens: estimatedOutputTokens,
                 total_tokens: estimatedInputTokens + estimatedOutputTokens
               };
             }
-            
+
             const finishChunk = {
               id: responseId,
               object: "chat.completion.chunk",
@@ -323,12 +428,12 @@ export class KiroExecutor extends BaseExecutor {
                 finish_reason: state.hasToolCalls ? "tool_calls" : "stop"
               }]
             };
-            
+
             // Include usage in final chunk if available
             if (state.usage) {
               finishChunk.usage = state.usage;
             }
-            
+
             controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(finishChunk)}\n\n`));
           }
         }
