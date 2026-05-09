@@ -290,7 +290,7 @@ export async function POST(request) {
           const claudeBaseUrls = {
             glm: "https://api.z.ai/api/anthropic/v1/messages",
             "glm-cn": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
-            kimi: "https://api.kimi.com/coding/v1/messages",
+            kimi: "https://api.moonshot.ai/anthropic/v1/messages",
             minimax: "https://api.minimax.io/anthropic/v1/messages",
             "minimax-cn": "https://api.minimaxi.com/anthropic/v1/messages",
             alicode: "https://coding.dashscope.aliyuncs.com/v1/chat/completions",

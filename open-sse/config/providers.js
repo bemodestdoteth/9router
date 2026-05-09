@@ -27,7 +27,7 @@ const CLAUDE_API_HEADERS = {
 };
 
 // Shared baseUrls
-const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/v1/messages";
+const KIMI_CODING_BASE_URL = "https://api.moonshot.ai/anthropic/v1/messages";
 
 export const PROVIDERS = {
   claude: {
